@@ -70,6 +70,66 @@ const register = async (req,res) => {
 }
 
 
+const login = async (req,res) => {
+    const {email,password} = req.body;
+
+    const user = await userModel.findOne({email});
+
+    if(!user){
+        return res.status(401).json({
+            message: "Invalid email or password"
+        })
+    }
+
+    const hashpassword = crypto.createHash("sha256").update(password).digest("hex");
+
+    const ispasswordValid = hashpassword ===user.password;
+
+    if(!ispasswordValid){
+        return res.status(401).json({
+            message: "Invalid email or password"
+        })
+    }
+
+    const refreshToken = jwt.sign({
+        id:user._id
+    },process.env.jwt_secret,{
+        expiresIn:"7d"
+    })
+
+    const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex");
+
+    const session = await sessionModel.create({
+        user:user._id,
+        refreshTokenHash,
+        ip:req.ip,
+        userAgent: req.headers["user-agent"]
+    })
+
+    const accessToken = jwt.sign({
+        id:user._id,
+        sessionId: session._id
+    },process.env.jwt_secret,{
+        expiresIn:"15m"
+    })
+
+    res.cookie("refreshToken",refreshToken,{
+        httpOnly:true,
+        secure:true,
+        sameSite:"strict",
+        maxAge:7*24*60*60*1000 // 7 days
+    })
+
+    res.status(200).json({
+        message:"Logged in successfully",
+        user:{
+            username:user.username,
+            email:user.email
+        },
+        accessToken,
+    })
+}
+
 const getMe = async (req,res) => {
     try{
         const token = req.headers.authorization?.split(" ")[1];
@@ -104,6 +164,18 @@ const reqWithrefreshToken = async (req,res) => {
     }
 
     const decoded = jwt.verify(refreshToken,process.env.jwt_secret)
+    const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex");
+
+    const session = await sessionModel.findOne({
+        refreshTokenHash,
+        revoked:false,
+    })
+
+    if(!session){
+        return res.status(401).json({
+            message: "Invalid refresh token"
+        })
+    }
 
     const accessToken = jwt.sign({
         id:decoded._id
@@ -116,6 +188,10 @@ const reqWithrefreshToken = async (req,res) => {
     },process.env.jwt_secret,{
         expiresIn:"7d"
     })
+
+    const newRefreshTokenHash = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
+    session.refreshTokenHash = newRefreshTokenHash;
+    await session.save();
 
     res.cookie("refreshToken",newRefreshToken,{
         httpOnly:true,
@@ -130,4 +206,4 @@ const reqWithrefreshToken = async (req,res) => {
     })
 }
 
-module.exports = {register,getMe, reqWithrefreshToken};
+module.exports = {register,getMe, reqWithrefreshToken,login};
